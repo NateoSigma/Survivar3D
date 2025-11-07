@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Minecraft 2D – Skrzynia</title>
+<style>
+  body {
+    margin: 0;
+    background: #87ceeb;
+    font-family: sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 20px;
+    padding: 10px;
+    user-select: none;
+  }
+
+  #crafting-panel {
+    width: 200px;
+    background: #cfcfcf;
+    border: 3px solid #333;
+    border-radius: 8px;
+    padding: 10px;
+    height: fit-content;
+  }
+
+  .craft-item {
+    background: #ddd;
+    margin: 5px 0;
+    padding: 5px;
+    border: 2px solid #555;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .craft-item:hover { background: #bbb; }
+
+  #main { display: flex; flex-direction: column; align-items: center; }
+  #ui { margin-bottom: 5px; font-size: 20px; font-weight: bold; }
+  #game {
+    display: grid;
+    grid-template-columns: repeat(20, 32px);
+    grid-template-rows: repeat(20, 32px);
+    width: 640px;
+    height: 640px;
+    border: 3px solid #333;
+    background-color: #5cc0ff;
+    background: linear-gradient(to top, #87CEEB, #E0F6FF);
+    transition: background 1s;
+    image-rendering: pixelated;
+  }
+
+  .tile { width: 32px; height: 32px; background-size: cover; image-rendering: pixelated; }
+  .grass  { background-image: url('grass.png'); }
+  .dirt   { background-image: url('dirt.png'); }
+  .stone  { background-image: url('stone.png'); }
+  .log    { background-image: url('log.png'); }
+  .leaves { background-image: url('leaves.png'); }
+  .planks { background-image: url('planks.png'); }
+  .stick  { background-image: url('stick.png'); }
+  .pickaxe_wood  { background-image: url('pickaxe_wood.png'); }
+  .chest  { background-image: url('chest.png'); }
+  .sky    { background-image: url('sky.png'); }
+  .player { background-image: url('player.png'); }
+  .sword_wood { background-image: url('sword_wood.png'); }
+  .raw_porkchop { background-image: url('raw_porkchop.png'); }
+
+  #inventory {
+    display: flex;
+    justify-content: center;
+    margin-top: 10px;
+  }
+
+  .slot {
+    width: 48px; height: 48px;
+    border: 2px solid #000;
+    margin: 0 4px;
+    background: #ccc;
+    position: relative;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .slot.active { border: 3px solid red; }
+  .slot span {
+    position: absolute;
+    bottom: 2px; right: 5px;
+    font-size: 14px;
+  }
+
+  .block-preview {
+    width: 32px; height: 32px;
+    background-size: cover;
+    image-rendering: pixelated;
+  }
+
+  /* GUI skrzyni */
+  #chest-ui {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 600px;
+    background: #cfcfcf;
+    border: 3px solid #333;
+    border-radius: 8px;
+    padding: 10px;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  #chest-slots {
+    display: grid;
+    grid-template-columns: repeat(9, 48px);
+    gap: 4px;
+    margin-bottom: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div id="crafting-panel">
+  <h3>🪓 Crafting</h3>
+  <div class="craft-item" onclick="craft('log_to_planks')">1x Log → 4x Deski</div>
+  <div class="craft-item" onclick="craft('planks_to_sticks')">2x Deski → 4x Patyki</div>
+  <div class="craft-item" onclick="craft('planks_to_chest')">8x Deski → 1x Skrzynia</div>
+  <div class="craft-item" onclick="craft('wood_pickaxe')">3x Deski + 2x Patyki → 1x Drewniany Kilof</div>
+  <div class="craft-item" onclick="craft('wood_sword')">2x Deski + 1x Patyk → 1x Drewniany Miecz</div>
+</div>
+
+<div style="margin-bottom:10px;">
+  <button onclick="saveGame()">💾 Zapisz</button>
+  <button onclick="loadGame()">📂 Wczytaj</button>
+</div>
+
+<div id="main">
+  <div id="ui">HP: <span id="hp">20</span> ❤️</div>
+  <div id="game"></div>
+  <div id="inventory"></div>
+</div>
+
+<div id="chest-ui">
+  <h2>📦 Skrzynia</h2>
+  <div id="chest-slots"></div>
+  <button onclick="closeChest()">Zamknij (R)</button>
+</div>
+
+<script>
+const game = document.getElementById('game');
+const invDiv = document.getElementById('inventory');
+const hpText = document.getElementById('hp');
+const chestUI = document.getElementById('chest-ui');
+const chestSlotsDiv = document.getElementById('chest-slots');
+
+const WORLD_WIDTH = 200, WORLD_HEIGHT = 20, VIEW_WIDTH = 20, VIEW_HEIGHT = 20, BASE_HEIGHT = 10;
+let world = [];
+let player = { x: 10, y: 5, vy: 0, onGround: false, hp: 20, fallStartY: null };
+let gravity = 0.25, jumpPower = -1, moveLeft = false, moveRight = false, moveSpeed = 0.25, vx = 0, cameraX = 0, facing = 1;
+let selectedSlot = 0;
+let chestOpen = false;
+let timeOfDay = 0; 
+let fullDayDuration = 200; 
+let framesPerSecond = 60;
+let daySpeed = 2 / (fullDayDuration * framesPerSecond); // = 0.0001666 na klatkę
+let inventory = Array(9).fill(null).map(() => ({ type: null, count: 0, durability: null }));
+const MAX_STACK = 64;
+
+// Globalna skrzynia
+let chest = Array(27).fill(null).map(() => ({ type: null, count: 0 }));
+
+function addToInventory(type, amount = 1, durability = null) {
+  for (let slot of inventory) {
+    if (slot.type === type && slot.count < MAX_STACK && !slot.durability) {
+      const space = MAX_STACK - slot.count;
+      const toAdd = Math.min(space, amount);
+      slot.count += toAdd;
+      amount -= toAdd;
+      if (amount <= 0) return;
+    }
+  }
+  for (let slot of inventory) {
+    if (!slot.type) {
+      const toAdd = Math.min(MAX_STACK, amount);
+      slot.type = type;
+      slot.count = toAdd;
+      slot.durability = durability;
+      amount -= toAdd;
+      if (amount <= 0) return;
+    }
+  }
+}
+
+function removeFromSlot(type, amount = 1) {
+  for (let slot of inventory) {
+    if (slot.type === type && slot.count > 0) {
+      const take = Math.min(amount, slot.count);
+      slot.count -= take;
+      if (slot.count <= 0) slot.type = null;
+      amount -= take;
+      if (amount <= 0) return true;
+    }
+  }
+  return false;
+}
+
+function getSelectedBlock() {
+  const slot = inventory[selectedSlot];
+  return slot && slot.type ? slot.type : null;
+}
+
+// === ZOMBIE ===
+let zombies = [];
+
+function spawnZombies() {
+  zombies = [];
+  for (let i = 0; i < 10; i++) {
+    const x = Math.floor(Math.random() * WORLD_WIDTH);
+    for (let y = 0; y < WORLD_HEIGHT - 1; y++) {
+      if (world[y][x] === 'grass' && world[y - 1][x] === 'sky') {
+        zombies.push({
+          x: x + Math.random() * 0.2,
+          y: y - 1,
+          hp: 20,
+          dir: Math.random() < 0.5 ? -1 : 1,
+          vy: 0,
+          onGround: true,
+          burn: false
+        });
+        break;
+      }
+    }
+  }
+}
+
+function updateZombies() {
+  for (const z of zombies) {
+    // Grawitacja
+    z.vy += gravity;
+    z.y += z.vy;
+    const below = world[Math.floor(z.y + 1)]?.[Math.floor(z.x)];
+    if (below && below !== 'sky') {
+      z.vy = 0;
+      z.onGround = true;
+      z.y = Math.floor(z.y);
+    } else {
+      z.onGround = false;
+    }
+
+    // Poruszanie się w stronę gracza
+    const dx = player.x - z.x;
+    if (Math.abs(dx) < 1 && Math.abs(player.y - z.y) < 1) {
+      // Atak
+      player.hp = Math.max(0, player.hp - 3);
+    } else if (Math.abs(dx) < 10) {
+      z.x += Math.sign(dx) * 0.05;
+    }
+
+    // Palenie się w dzień
+    const isDay = timeOfDay < 1; // 0–1 dzień, 1–2 noc
+    if (isDay) {
+      z.burn = true;
+      z.hp -= 0.2;
+    } else {
+      z.burn = false;
+    }
+  }
+
+  // Usuń martwe zombie
+  zombies = zombies.filter(z => z.hp > 0);
+}
+
+function drawZombies() {
+  const tiles = game.querySelectorAll('.tile');
+  zombies.forEach(z => {
+    const vx = Math.floor(z.x) - cameraX;
+    const vy = Math.floor(z.y);
+    if (vx >= 0 && vx < VIEW_WIDTH && vy >= 0 && vy < VIEW_HEIGHT) {
+      const tileIndex = vy * VIEW_WIDTH + vx;
+      const tile = tiles[tileIndex];
+      if (tile) tile.style.backgroundImage = "url('zombie.png')";
+      if (z.burn) tile.style.filter = 'brightness(1.5) saturate(2)';
+    }
+  });
+}
+
+function drawPigs() {
+  const tiles = game.querySelectorAll('.tile');
+  pigs.forEach(p => {
+    const vx = Math.floor(p.x) - cameraX;
+    const vy = Math.floor(p.y);
+    if (vx >= 0 && vx < VIEW_WIDTH && vy >= 0 && vy < VIEW_HEIGHT) {
+      const tileIndex = vy * VIEW_WIDTH + vx;
+      const tile = tiles[tileIndex];
+      if (tile) tile.style.backgroundImage = "url('pig.png')";
+    }
+  });
+}
+
+let pigs = [];
+
+function spawnPigs() {
+  pigs = [];
+  for (let i = 0; i < 10; i++) { // 10 losowych świń
+    const x = Math.floor(Math.random() * WORLD_WIDTH);
+    for (let y = 0; y < WORLD_HEIGHT - 1; y++) {
+      if (world[y][x] === 'grass' && world[y - 1][x] === 'sky') {
+        pigs.push({
+          x: x + Math.random() * 0.2,
+          y: y - 1,
+          dir: Math.random() < 0.5 ? -1 : 1,
+          moveTimer: 0,
+          vy: 0,
+          onGround: true
+        });
+        break;
+      }
+    }
+  }
+}
+
+function attackPig() {
+  const px = Math.floor(player.x);
+  const py = Math.floor(player.y);
+
+  // znajdź świnię w zasięgu 1 bloku w kierunku, w którym patrzy gracz
+  const target = pigs.find(p =>
+    Math.abs(p.x - (px + facing)) < 0.6 && Math.abs(p.y - py) < 1
+  );
+  if (!target) return; // brak celu
+
+  // sprawdź, czy gracz ma miecz
+  const sword = inventory.find(s => s.type === 'sword_wood');
+  let damage = 1; // domyślnie pięść
+
+  if (sword) {
+    damage = 2;
+    sword.durability--;
+    if (sword.durability <= 0) {
+      sword.type = null;
+      sword.count = 0;
+      sword.durability = null;
+      alert("⚔️ Twój drewniany miecz się złamał!");
+    }
+  }
+
+  // zadaj obrażenia świni
+  target.hp -= damage;
+
+  // jeśli świnia padła, usuń ją
+  if (target.hp <= 0) {
+    pigs = pigs.filter(p => p !== target);
+    addToInventory('raw_porkchop', 1);
+  }
+}
+
+function eatFood() {
+  const slot = inventory.find(s => s.type === 'raw_porkchop');
+  if (!slot || slot.count <= 0) return;
+
+  // Odzyskaj 2 HP, ale nie więcej niż 20
+  player.hp = Math.min(20, player.hp + 2);
+
+  // Zużyj 1 surową wieprzowinę
+  slot.count--;
+  if (slot.count <= 0) slot.type = null;
+
+  drawInventory();
+}
+
+function updatePigs() {
+  for (const pig of pigs) {
+    // Grawitacja
+    pig.vy += gravity;
+    pig.y += pig.vy;
+
+    // Kolizja z ziemią
+    const below = world[Math.floor(pig.y + 1)]?.[Math.floor(pig.x)];
+    if (below && below !== 'sky') {
+      pig.vy = 0;
+      pig.onGround = true;
+      pig.y = Math.floor(pig.y);
+    } else {
+      pig.onGround = false;
+    }
+
+    // Ruch poziomy co jakiś czas
+    pig.moveTimer--;
+    if (pig.moveTimer <= 0) {
+      pig.moveTimer = 60 + Math.floor(Math.random() * 60);
+      pig.dir = Math.random() < 0.5 ? -1 : 1;
+    }
+
+    if (pig.onGround) {
+      const nx = pig.x + pig.dir * 0.05;
+      const frontBlock = world[Math.floor(pig.y)]?.[Math.floor(nx)];
+      const belowFront = world[Math.floor(pig.y + 1)]?.[Math.floor(nx)];
+
+      // Jeśli przed świnią jest blok lub nie ma gruntu, odwróć kierunek
+      if (frontBlock !== 'sky' || belowFront === 'sky') {
+        pig.dir *= -1;
+      } else {
+        pig.x = Math.max(0, Math.min(WORLD_WIDTH - 1, nx));
+      }
+    }
+  }
+}
+
+function spawnPigs() {
+  pigs = [];
+  for (let i = 0; i < 10; i++) { // 10 losowych świń
+    const x = Math.floor(Math.random() * WORLD_WIDTH);
+    for (let y = 0; y < WORLD_HEIGHT - 1; y++) {
+      if (world[y][x] === 'grass' && world[y - 1][x] === 'sky') {
+        pigs.push({
+          x: x + Math.random() * 0.2,
+          y: y - 1,
+          dir: Math.random() < 0.5 ? -1 : 1,
+          moveTimer: 0,
+          vy: 0,
+          onGround: true
+        });
+        break;
+      }
+    }
+  }
+}
+
+function generateWorld() {
+  world = [];
+  let h = BASE_HEIGHT;
+  for (let y = 0; y < WORLD_HEIGHT; y++) {
+    world[y] = Array(WORLD_WIDTH).fill('sky');
+  }
+
+  for (let x = 0; x < WORLD_WIDTH; x++) {
+    // Lekko falujący teren
+    h += Math.floor(Math.random() * 3 - 1);
+    h = Math.max(4, Math.min(WORLD_HEIGHT - 3, h));
+
+    for (let y = h; y < WORLD_HEIGHT; y++) {
+      world[y][x] = y === h ? 'grass' : (y < WORLD_HEIGHT - 3 ? 'dirt' : 'stone');
+    }
+
+    // Szansa na drzewo (co 5-10 bloków)
+    if (Math.random() < 0.1 && h > 2 && h < WORLD_HEIGHT - 6) {
+      const treeHeight = 3 + Math.floor(Math.random() * 3);
+      for (let t = 1; t <= treeHeight; t++) {
+        if (h - t >= 0) world[h - t][x] = 'log';
+      }
+
+      // Liście na górze
+      const topY = h - treeHeight;
+      for (let ly = -2; ly <= 2; ly++) {
+        for (let lx = -2; lx <= 2; lx++) {
+          const ny = topY + ly, nx = x + lx;
+          if (
+            ny >= 0 &&
+            ny < WORLD_HEIGHT &&
+            nx >= 0 &&
+            nx < WORLD_WIDTH &&
+            world[ny][nx] === 'sky' &&
+            Math.abs(lx) + Math.abs(ly) < 4
+          ) {
+            world[ny][nx] = 'leaves';
+          }
+        }
+      }
+    }
+  }
+  spawnPigs();
+}
+
+// === Rysowanie ===
+function draw() {
+  game.innerHTML = '';
+  cameraX = Math.max(0, Math.min(WORLD_WIDTH - VIEW_WIDTH, Math.floor(player.x - VIEW_WIDTH / 2)));
+  for (let y = 0; y < VIEW_HEIGHT; y++) {
+    for (let x = 0; x < VIEW_WIDTH; x++) {
+      const wx = x + cameraX;
+      const tile = document.createElement('div');
+      tile.classList.add('tile', world[y]?.[wx] || 'sky');
+      if (wx === Math.floor(player.x) && y === Math.floor(player.y)) tile.classList = 'tile player';
+      game.appendChild(tile);
+    }
+  }
+  hpText.textContent = player.hp;
+  drawPigs();
+  drawZombies();
+  drawInventory();
+  if (chestOpen) drawChest();
+  const oldOverlay = document.querySelector('.night-overlay');
+  if (oldOverlay) oldOverlay.remove();
+ 
+  let brightness = Math.abs(timeOfDay - 1);
+  let alpha = brightness * 0.6;
+
+  const overlay = document.createElement('div');
+  overlay.classList.add('night-overlay');
+  overlay.style.position = 'absolute';
+  overlay.style.left = '0';
+  overlay.style.top = '0';
+  overlay.style.width = '100%';
+  overlay.style.height = '100%';
+  overlay.style.backgroundColor = `rgba(0, 0, 40, ${alpha})`;
+  overlay.style.pointerEvents = 'none';
+
+  game.appendChild(overlay);
+}
+
+function drawInventory() {
+  invDiv.innerHTML = '';
+  inventory.forEach((slot, i) => {
+    const div = document.createElement('div');
+    div.className = 'slot' + (i === selectedSlot ? ' active' : '');
+    if (slot.type) {
+      const block = document.createElement('div');
+      block.className = 'block-preview ' + slot.type;
+      const count = document.createElement('span');
+      count.textContent = slot.count;
+
+      if (slot.durability) {
+        const dur = document.createElement('span');
+        dur.textContent = "⚒️" + slot.durability;
+        dur.style.bottom = '18px';
+        dur.style.right = '4px';
+        dur.style.fontSize = '12px';
+        div.appendChild(dur);
+      }
+
+      div.append(block, count);
+    }
+    div.onclick = () => { selectedSlot = i; drawInventory(); };
+    invDiv.appendChild(div);
+  });
+}
+
+// === Fizyka ===
+function updatePhysics() {
+  if (moveLeft) { vx = -moveSpeed; facing = -1; }
+  else if (moveRight) { vx = moveSpeed; facing = 1; }
+  else vx = 0;
+  const nextX = player.x + vx;
+  const nextTile = world[Math.floor(player.y)]?.[Math.floor(nextX)];
+  if (nextTile === 'sky' || nextTile === 'leaves') player.x = Math.max(0, Math.min(WORLD_WIDTH - 1, nextX));
+  if (!player.onGround && player.fallStartY == null) player.fallStartY = player.y;
+  player.vy += gravity; player.y += player.vy;
+  if (player.y >= WORLD_HEIGHT - 1) handleLanding(WORLD_HEIGHT - 1);
+  else if (world[Math.floor(player.y) + 1]?.[Math.floor(player.x)] !== 'sky') handleLanding(Math.floor(player.y));
+  else player.onGround = false;
+  updatePigs();
+}
+
+function handleLanding(gy) {
+  if (!player.onGround && player.fallStartY != null) {
+    const fall = player.fallStartY - gy;
+    if (fall > 4) player.hp = Math.max(0, player.hp - Math.floor(fall - 4));
+  }
+  player.fallStartY = null; player.onGround = true; player.vy = 0; player.y = gy;
+}
+
+// === Akcje ===
+function jump() { if (player.onGround) { player.vy = jumpPower; player.onGround = false; } }
+
+function breakBlock() {
+  const tx = Math.floor(player.x + facing), ty = Math.floor(player.y);
+  const target = world[ty]?.[tx];
+  if (!target || target === 'sky') return;
+
+  // Jeśli to kamień — sprawdź kilof
+  if (target === 'stone') {
+    const hasPickaxe = inventory.some(s => s.type === 'pickaxe_wood');
+    if (!hasPickaxe) return; // nie masz kilofa
+  }
+
+  const sword = inventory.find(s => s.type === 'sword_wood');
+  if (sword) {
+    sword.durability--;
+    if (sword.durability <= 0) {
+      sword.type = null;
+      sword.count = 0;
+      sword.durability = null;
+      alert("⚔️ Twój drewniany miecz się złamał!");
+    }
+  }
+
+
+  addToInventory(target);
+  world[ty][tx] = 'sky';
+
+  
+  if (target === 'stone') {
+    const slot = inventory.find(s => s.type === 'pickaxe_wood');
+    if (slot) {
+      slot.durability--;
+      if (slot.durability <= 0) {
+        slot.type = null;
+        slot.count = 0;
+        slot.durability = null;
+        alert("🪓 Twój drewniany kilof się zepsuł!");
+      }
+    }
+  }
+}
+
+function placeBlock() {
+  const block = getSelectedBlock();
+  const tx = Math.floor(player.x + facing), ty = Math.floor(player.y);
+  if (!block) return;
+  if (world[ty]?.[tx] === 'sky' && removeFromSlot(block)) {
+    world[ty][tx] = block;
+  }
+}
+
+// === Crafting ===
+function craft(type) {
+  if (type === 'log_to_planks') {
+    if (removeFromSlot('log', 1)) addToInventory('planks', 4);
+  } else if (type === 'planks_to_sticks') {
+    if (removeFromSlot('planks', 2)) addToInventory('stick', 4);
+  } else if (type === 'planks_to_chest') {
+    let total = inventory.reduce((s, i) => s + (i.type === 'planks' ? i.count : 0), 0);
+    if (total >= 8) {
+      removeFromSlot('planks', 8);
+      addToInventory('chest', 1);
+    }
+  } else if (type === 'wood_pickaxe') {
+    let totalPlanks = inventory.reduce((s, i) => s + (i.type === 'planks' ? i.count : 0), 0);
+    let totalSticks = inventory.reduce((s, i) => s + (i.type === 'stick' ? i.count : 0), 0);
+    if (totalPlanks >= 3 && totalSticks >= 2) {
+      removeFromSlot('planks', 3);
+      removeFromSlot('stick', 2);
+      addToInventory('pickaxe_wood', 1, 60);
+    }
+  } else if (type === 'wood_sword') {
+    let totalPlanks = inventory.reduce((s, i) => s + (i.type === 'planks' ? i.count : 0), 0);
+    let totalSticks = inventory.reduce((s, i) => s + (i.type === 'stick' ? i.count : 0), 0);
+    if (totalPlanks >= 2 && totalSticks >= 1) {
+      removeFromSlot('planks', 2);
+      removeFromSlot('stick', 1);
+      addToInventory('sword_wood', 1, 60); // 60 trwałości
+    }
+  }
+  drawInventory();
+}
+
+// 3 deski + 2 patyki = drewniany kilof
+function craftPickaxeWood() {
+  const planks = countInInventory('plank');
+  const sticks = countInInventory('stick');
+
+  if (planks >= 3 && sticks >= 2) {
+    removeFromInventory('plank', 3);
+    removeFromInventory('stick', 2);
+    addToInventory('pickaxe_wood', 1);
+  }
+}
+
+// === Skrzynia ===
+function toggleChest() {
+  const tx = Math.floor(player.x + facing), ty = Math.floor(player.y);
+  if (world[ty]?.[tx] === 'chest') {
+    chestOpen = !chestOpen;
+    chestUI.style.display = chestOpen ? 'flex' : 'none';
+    drawChest();
+  }
+}
+
+function closeChest() {
+  chestOpen = false;
+  chestUI.style.display = 'none';
+}
+
+function drawChest() {
+  chestSlotsDiv.innerHTML = '';
+  chest.forEach((slot, i) => {
+    const div = document.createElement('div');
+    div.className = 'slot';
+    if (slot.type) {
+      const block = document.createElement('div');
+      block.className = 'block-preview ' + slot.type;
+      const count = document.createElement('span');
+      count.textContent = slot.count;
+      div.append(block, count);
+    }
+    div.onclick = () => {
+      const invSlot = inventory[selectedSlot];
+      // Jeśli chest slot pusty -> przenieś 1 z inwentarza
+      if (!slot.type && invSlot.type) {
+        slot.type = invSlot.type;
+        slot.count = 1;
+        invSlot.count--;
+        if (invSlot.count <= 0) invSlot.type = null;
+      } else if (slot.type && (!invSlot.type || invSlot.type === slot.type)) {
+        // przenieś 1 ze skrzyni do ekwipunku
+        addToInventory(slot.type, 1);
+        slot.count--;
+        if (slot.count <= 0) slot.type = null;
+      }
+      drawChest(); drawInventory();
+    };
+    chestSlotsDiv.appendChild(div);
+  });
+}
+
+// === Klawisze ===
+document.addEventListener('keydown', e => {
+  const key = e.key.toLowerCase();
+
+  // --- Skrzynia otwarta ---
+  if (chestOpen) {
+    if (key === 'r') {  // Zamknij skrzynię
+      closeChest();
+      return;
+    }
+
+    // Wkładanie / wyjmowanie itemów 1–9
+    if (key >= '1' && key <= '9') {
+      const chestSlotIndex = parseInt(key) - 1;
+      const chestSlot = chest[chestSlotIndex];
+      const invSlot = inventory[selectedSlot];
+
+      if (chestSlot.type) {
+        // Zabierz 1 item ze skrzyni
+        addToInventory(chestSlot.type, 1);
+        chestSlot.count--;
+        if (chestSlot.count <= 0) chestSlot.type = null;
+      } else if (invSlot.type && invSlot.count > 0) {
+        // Włóż 1 item do skrzyni
+        chestSlot.type = invSlot.type;
+        chestSlot.count = 1;
+        invSlot.count--;
+        if (invSlot.count <= 0) invSlot.type = null;
+      }
+
+      drawChest();
+      drawInventory();
+      return;
+    }
+    return; // Nie pozwalamy na ruch podczas otwartej skrzyni
+  }
+
+  // --- Skrzynia zamknięta ---
+  if (key >= '1' && key <= '9') {
+    selectedSlot = parseInt(key) - 1;
+    drawInventory();
+    return;
+  }
+
+  switch (key) {
+    case 'a': moveLeft = true; break;
+    case 'd': moveRight = true; break;
+    case 'w': jump(); break;
+    case 'e':
+      const before = pigs.length;
+      attackPig();
+      if (pigs.length === before) breakBlock();
+      break;
+    case 'f':
+      eatFood();
+      break;
+    case 'q': placeBlock(); break;
+    case 'r': {
+      const tx = Math.floor(player.x + facing);
+      const ty = Math.floor(player.y);
+      if (world[ty] && world[ty][tx] === 'chest') {
+        toggleChest();
+      }
+      break;
+    }
+    case 'l': // load
+      loadGame();
+      break;
+    case 'k': // save
+      saveGame();
+      break;
+    case 'y': {
+      const tx = Math.floor(player.x);
+      const ty = Math.floor(player.y + 1);
+      const target = world[ty]?.[tx];
+      if (target && target !== 'sky') {
+        if (target === 'stone') {
+          const hasPickaxe = inventory.some(s => s.type === 'pickaxe_wood');
+          if (!hasPickaxe) return; // tylko z kilofem
+        }
+        addToInventory(target);
+        world[ty][tx] = 'sky';
+      }
+      break;
+    }
+  }
+});
+
+document.addEventListener('keyup', e => {
+  const key = e.key.toLowerCase();
+  if (key === 'a') moveLeft = false;
+  if (key === 'd') moveRight = false;
+});
+
+function gameLoop() {
+  if (!chestOpen) updatePhysics();
+
+  // === Cykl dnia i nocy ===
+  timeOfDay += daySpeed;
+  if (timeOfDay > 2) timeOfDay = 0;
+
+  // Spawn zombie tylko na początku nocy
+  if (Math.abs(timeOfDay - 1) < 0.001) spawnZombies();
+  updateZombies();
+
+  draw();
+
+  if (player.hp > 0) requestAnimationFrame(gameLoop);
+  else document.body.innerHTML = "<h1 style='color:red;text-align:center;margin-top:200px;'>💀 GAME OVER 💀</h1>";
+}
+
+function gameLoop() {
+  if (!chestOpen) updatePhysics();
+
+  // === Cykl dnia i nocy ===
+  timeOfDay += daySpeed;
+  if (timeOfDay > 2) timeOfDay = 0;
+
+  if (timeOfDay >= 1 && timeOfDay < 1.01) {
+    spawnZombies();
+    pigs = [];
+  }
+  if ((timeOfDay < 0.01) || (timeOfDay > 1.99)) {
+    spawnPigs();
+    zombies = [];
+  }
+
+  draw();
+
+  if (player.hp > 0) requestAnimationFrame(gameLoop);
+  else document.body.innerHTML = "<h1 style='color:red;text-align:center;margin-top:200px;'>💀 GAME OVER 💀</h1>";
+}
+
+// === ZAPIS I WCZYTYWANIE MAPY ===
+function saveGame() {
+  const data = {
+    world,
+    inventory,
+    chest,
+    player,
+    timeOfDay
+  };
+  localStorage.setItem('minecraft2d_save', JSON.stringify(data));
+  alert('💾 Zapisano świat!');
+}
+
+function loadGame() {
+  const data = localStorage.getItem('minecraft2d_save');
+  if (!data) {
+    alert('Brak zapisanego świata. Tworzę nowy.');
+    generateWorld();
+    return;
+  }
+
+  try {
+    const save = JSON.parse(data);
+    world = save.world || world;
+    inventory = save.inventory || inventory;
+    chest = save.chest || chest;
+    player = save.player || player;
+    timeOfDay = save.timeOfDay || 0;
+    alert('✅ Wczytano zapisany świat!');
+  } catch (e) {
+    console.error('Błąd wczytywania zapisu:', e);
+    alert('❌ Nie udało się wczytać zapisu.');
+    generateWorld();
+  }
+}
+
+loadGame();
+generateWorld();
+draw();
+gameLoop();
+</script>
+</body>
+</html>
